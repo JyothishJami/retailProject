@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Module } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
 
-import { AppConfig } from '../../config/config.module';
+import { AppConfig } from '../../config/app-config';
 import { REQUEST_ID_HEADER } from '../http/request-id';
 
 @Module({

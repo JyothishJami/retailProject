@@ -1,7 +1,7 @@
 import { JwtService } from '@nestjs/jwt';
 import { DomainError } from '@quickpick/shared';
 
-import type { AppConfig } from '../../../config/config.module';
+import type { AppConfig } from '../../../config/app-config';
 
 import { TokenService, hashRefreshToken } from './token.service';
 

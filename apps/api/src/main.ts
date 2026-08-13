@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 
 import { createApp } from './bootstrap';
-import { AppConfig } from './config/config.module';
+import { AppConfig } from './config/app-config';
 
 async function main(): Promise<void> {
   const app = await createApp();

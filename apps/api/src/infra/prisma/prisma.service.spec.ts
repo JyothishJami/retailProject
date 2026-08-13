@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 
-import type { AppConfig } from '../../config/config.module';
+import type { AppConfig } from '../../config/app-config';
 
 import { PrismaService } from './prisma.service';
 

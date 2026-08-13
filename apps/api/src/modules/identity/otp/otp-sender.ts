@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { OtpChannel } from '@prisma/client';
 
-import { AppConfig } from '../../../config/config.module';
+import { AppConfig } from '../../../config/app-config';
 
 export interface OtpMessage {
   destination: string;

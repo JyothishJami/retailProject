@@ -5,7 +5,7 @@ import type { OtpChallenge, OtpChannel, OtpPurpose } from '@prisma/client';
 import { DomainError, ErrorCode } from '@quickpick/shared';
 import * as argon2 from 'argon2';
 
-import { AppConfig } from '../../../config/config.module';
+import { AppConfig } from '../../../config/app-config';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
 
 import { OtpSender } from './otp-sender';

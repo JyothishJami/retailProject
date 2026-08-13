@@ -2,7 +2,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ErrorCode, RoleCode } from '@quickpick/shared';
 
 import { createPrismaMock, type PrismaMock } from '../../../test/support/prisma-mock';
-import type { AppConfig } from '../../config/config.module';
+import type { AppConfig } from '../../config/app-config';
 
 import { AuthService } from './auth.service';
 import type { OtpService } from './otp/otp.service';

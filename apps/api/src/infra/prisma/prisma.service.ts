@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 
-import { AppConfig } from '../../config/config.module';
+import { AppConfig } from '../../config/app-config';
 
 /**
  * The single database client. Feature modules depend on this service rather

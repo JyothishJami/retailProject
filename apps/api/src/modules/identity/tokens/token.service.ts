@@ -4,7 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { DomainError, ErrorCode } from '@quickpick/shared';
 
-import { AppConfig } from '../../../config/config.module';
+import { AppConfig } from '../../../config/app-config';
 
 export const TOKEN_ISSUER = 'quickpick';
 

@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 
-import type { AppConfig } from '../../../config/config.module';
+import type { AppConfig } from '../../../config/app-config';
 
 import { LoggingOtpSender, maskDestination } from './otp-sender';
 

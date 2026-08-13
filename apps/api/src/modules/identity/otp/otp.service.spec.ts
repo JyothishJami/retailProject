@@ -2,7 +2,7 @@ import { DomainError, ErrorCode } from '@quickpick/shared';
 import * as argon2 from 'argon2';
 
 import { createPrismaMock, type PrismaMock } from '../../../../test/support/prisma-mock';
-import type { AppConfig } from '../../../config/config.module';
+import type { AppConfig } from '../../../config/app-config';
 
 import type { OtpSender } from './otp-sender';
 import { OtpService } from './otp.service';
