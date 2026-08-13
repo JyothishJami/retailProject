@@ -4,7 +4,7 @@ import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { PG_POOL } from '../src/infra/database/database.tokens';
+import { PrismaService } from '../src/infra/prisma/prisma.service';
 import { REDIS_CLIENT } from '../src/infra/redis/redis.tokens';
 
 describe('health probes (e2e)', () => {
@@ -16,8 +16,8 @@ describe('health probes (e2e)', () => {
     // Dependencies are stubbed: this suite asserts wiring and HTTP contract, not
     // Postgres/Redis behaviour (that belongs to the Testcontainers suites).
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(PG_POOL)
-      .useValue({ query, end: jest.fn() })
+      .overrideProvider(PrismaService)
+      .useValue({ $queryRawUnsafe: query, $connect: jest.fn(), $disconnect: jest.fn() })
       .overrideProvider(REDIS_CLIENT)
       .useValue({ ping, quit: jest.fn() })
       .compile();
@@ -31,7 +31,7 @@ describe('health probes (e2e)', () => {
   });
 
   beforeEach(() => {
-    query.mockResolvedValue({ rows: [{ '?column?': 1 }] });
+    query.mockResolvedValue([{ '?column?': 1 }]);
     ping.mockResolvedValue('PONG');
   });
 

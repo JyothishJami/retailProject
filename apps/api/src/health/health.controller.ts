@@ -2,12 +2,15 @@ import { Controller, Get, HttpCode, HttpStatus, Res, VERSION_NEUTRAL } from '@ne
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 
+import { Public } from '../modules/identity/rbac/permissions.decorator';
+
 import { HealthService, type ReadinessReport } from './health.service';
 
 @ApiTags('health')
 // Probes are version-neutral and unprefixed: orchestrator config must not break
 // when the API version changes.
 @Controller({ version: VERSION_NEUTRAL })
+@Public()
 export class HealthController {
   constructor(private readonly health: HealthService) {}
 
