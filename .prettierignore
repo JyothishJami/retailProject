@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+pnpm-lock.yaml
+.turbo
+
+# Phase 0 documents are hand-formatted prose tables; reflowing them destroys readability.
+docs
