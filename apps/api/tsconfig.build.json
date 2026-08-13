@@ -2,10 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": "src",
-    "types": ["node"],
-    // `nest build` deletes dist but not the build-info file, which then suppresses
-    // re-emit of unchanged files.
-    "incremental": false
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "coverage", "test", "src/**/*.spec.ts"]

@@ -1,9 +1,10 @@
 # Multi-stage build: the runtime image carries only production dependencies and
 # compiled JavaScript, and runs as a non-root user.
 FROM node:20.18.1-alpine AS base
-ENV PNPM_HOME=/pnpm
-ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable
+ARG PNPM_VERSION=9.15.4
+# Installed with npm rather than corepack: the corepack bundled with this Node
+# release cannot verify current npm registry signing keys.
+RUN npm i -g pnpm@${PNPM_VERSION}
 WORKDIR /repo
 
 FROM base AS deps

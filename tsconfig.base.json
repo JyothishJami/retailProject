@@ -8,7 +8,9 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "incremental": true,
+    // Turborepo caches task output; tsc build-info files survive a deleted `dist`
+    // and then suppress re-emit, so incremental builds are off.
+    "incremental": false,
     "composite": false,
     "strict": true,
     "noUncheckedIndexedAccess": true,
