@@ -1,0 +1,13 @@
+{
+  "name": "@quickpick/config",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "tsconfig.library.json",
+    "jest.preset.cjs"
+  ],
+  "scripts": {
+    "lint": "echo \"no lintable sources\"",
+    "typecheck": "echo \"no typecheckable sources\""
+  }
+}
