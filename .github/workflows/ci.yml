@@ -57,6 +57,54 @@ jobs:
           path: '**/coverage/lcov.info'
           if-no-files-found: ignore
 
+  migrations:
+    name: migrations apply to an empty database
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        # PostGIS is part of the schema (branch/address geography columns).
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: quickpick
+          POSTGRES_PASSWORD: quickpick
+          POSTGRES_DB: quickpick
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U quickpick" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://quickpick:quickpick@localhost:5432/quickpick
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The seed script imports the shared role catalogue from its build output.
+      - name: Build shared package
+        run: pnpm --filter @quickpick/shared build
+
+      - name: Validate schema
+        run: pnpm --filter @quickpick/api exec prisma validate
+
+      - name: Apply migrations
+        run: pnpm --filter @quickpick/api db:migrate
+
+      - name: Seed roles and permissions (twice, to prove idempotence)
+        run: |
+          pnpm --filter @quickpick/api db:seed
+          pnpm --filter @quickpick/api db:seed
+
   docker:
     name: api image builds
     runs-on: ubuntu-latest

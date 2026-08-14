@@ -1,8 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type Redis from 'ioredis';
-import type { Pool } from 'pg';
 
-import { PG_POOL } from '../infra/database/database.tokens';
+import { PrismaService } from '../infra/prisma/prisma.service';
 import { REDIS_CLIENT } from '../infra/redis/redis.tokens';
 
 export type DependencyState = 'up' | 'down';
@@ -44,7 +43,7 @@ export class HealthService {
   private readonly logger = new Logger(HealthService.name);
 
   constructor(
-    @Inject(PG_POOL) private readonly pool: Pool,
+    private readonly prisma: PrismaService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
@@ -56,7 +55,7 @@ export class HealthService {
   async readiness(): Promise<ReadinessReport> {
     const [postgres, redis] = await Promise.all([
       this.check('postgres', async () => {
-        await this.pool.query('SELECT 1');
+        await this.prisma.$queryRawUnsafe('SELECT 1');
       }),
       this.check('redis', async () => {
         await this.redis.ping();

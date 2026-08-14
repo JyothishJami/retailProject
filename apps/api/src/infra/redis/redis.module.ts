@@ -1,7 +1,7 @@
 import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
 import Redis from 'ioredis';
 
-import { AppConfig } from '../../config/config.module';
+import { AppConfig } from '../../config/app-config';
 
 import { REDIS_CLIENT } from './redis.tokens';
 

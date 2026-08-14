@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type Redis from 'ioredis';
-import type { Pool } from 'pg';
+
+import { PrismaService } from '../infra/prisma/prisma.service';
 
 import { HealthService } from './health.service';
 
@@ -14,9 +15,14 @@ function makeService(overrides: { query?: jest.Mock; ping?: jest.Mock }): {
   query: jest.Mock;
   ping: jest.Mock;
 } {
-  const query = overrides.query ?? jest.fn().mockResolvedValue({ rows: [] });
+  const query = overrides.query ?? jest.fn().mockResolvedValue([{ '1': 1 }]);
   const ping = overrides.ping ?? jest.fn().mockResolvedValue('PONG');
-  const service = new HealthService({ query } as unknown as Pool, { ping } as unknown as Redis);
+  const service = new HealthService(
+    { $queryRawUnsafe: query } as unknown as PrismaService,
+    {
+      ping,
+    } as unknown as Redis,
+  );
   return { service, query, ping };
 }
 

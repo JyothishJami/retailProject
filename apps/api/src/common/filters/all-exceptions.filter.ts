@@ -22,6 +22,13 @@ const STATUS_BY_CODE: Partial<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.RATE_LIMITED]: HttpStatus.TOO_MANY_REQUESTS,
   [ErrorCode.SERVICE_UNAVAILABLE]: HttpStatus.SERVICE_UNAVAILABLE,
   [ErrorCode.IDEMPOTENCY_KEY_REUSED]: HttpStatus.CONFLICT,
+  [ErrorCode.OTP_RATE_LIMITED]: HttpStatus.TOO_MANY_REQUESTS,
+  [ErrorCode.OTP_INVALID]: HttpStatus.BAD_REQUEST,
+  [ErrorCode.OTP_EXPIRED]: HttpStatus.GONE,
+  // 423 Locked: the documented status for a temporarily locked account.
+  [ErrorCode.ACCOUNT_LOCKED]: 423 as HttpStatus,
+  [ErrorCode.REFRESH_TOKEN_INVALID]: HttpStatus.UNAUTHORIZED,
+  [ErrorCode.REFRESH_REUSE_DETECTED]: HttpStatus.UNAUTHORIZED,
   [ErrorCode.ORDER_INVALID_TRANSITION]: HttpStatus.CONFLICT,
   [ErrorCode.ORDER_ALREADY_TERMINAL]: HttpStatus.CONFLICT,
   [ErrorCode.ORDER_ACTOR_NOT_PERMITTED]: HttpStatus.FORBIDDEN,

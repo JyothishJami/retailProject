@@ -12,6 +12,9 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/config/package.json packages/config/
 COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
+# The Prisma schema is needed at install time: the api package's postinstall
+# generates the client.
+COPY apps/api/prisma apps/api/prisma
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
@@ -26,6 +29,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/config/package.json packages/config/
 COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
+COPY apps/api/prisma apps/api/prisma
 RUN pnpm install --frozen-lockfile --prod
 COPY --from=build /repo/packages/shared/dist packages/shared/dist
 COPY --from=build /repo/apps/api/dist apps/api/dist

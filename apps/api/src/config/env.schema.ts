@@ -32,7 +32,8 @@ export const envSchema = z
     CORS_ORIGINS: csvList.default(''),
 
     DATABASE_URL: nonEmpty.startsWith('postgres'),
-    DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(200).default(10),
+    /** Queries slower than this are logged as warnings with their SQL text. */
+    DB_SLOW_QUERY_MS: z.coerce.number().int().min(1).default(500),
     REDIS_URL: nonEmpty.startsWith('redis'),
 
     // 32 bytes minimum: short HS256 secrets are brute-forceable offline.
@@ -40,6 +41,22 @@ export const envSchema = z
     JWT_REFRESH_SECRET: nonEmpty.min(32),
     ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).default(30),
+
+    OTP_LENGTH: z.coerce.number().int().min(4).max(8).default(6),
+    OTP_TTL_SECONDS: z.coerce.number().int().min(30).default(300),
+    OTP_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
+    /** How long a destination must wait between OTP requests. */
+    OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(60),
+    /** OTP requests allowed per destination per hour. */
+    OTP_MAX_PER_HOUR: z.coerce.number().int().min(1).default(5),
+    /**
+     * Development escape hatch: when set, every OTP is this code and nothing is
+     * sent. Refused in production by the check below.
+     */
+    OTP_DEV_CODE: z
+      .string()
+      .regex(/^\d{4,8}$/)
+      .optional(),
 
     S3_ENDPOINT: nonEmpty,
     S3_REGION: nonEmpty.default('us-east-1'),
@@ -61,6 +78,13 @@ export const envSchema = z
           code: z.ZodIssueCode.custom,
           path: ['JWT_REFRESH_SECRET'],
           message: 'access and refresh secrets must differ in production',
+        });
+      }
+      if (env.OTP_DEV_CODE !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['OTP_DEV_CODE'],
+          message: 'must not be set in production',
         });
       }
       if (env.CORS_ORIGINS.length === 0) {

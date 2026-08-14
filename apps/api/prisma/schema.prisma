@@ -1,0 +1,1331 @@
+// QuickPick data model — the V1 (MVP) subset of docs/03-database.md.
+//
+// Conventions enforced here (§28): uuid primary keys, timestamptz everywhere,
+// `deleted_at` soft deletes on referenced entities, snake_case tables/columns,
+// `version` optimistic-concurrency counters on contended rows, and a tenant id
+// (`business_id`/`branch_id`) leading every composite index on business data.
+//
+// V2/V3 tables (payments, refunds, reviews, product variants, delivery) are
+// designed in the doc but intentionally absent until their phase: an unused
+// table is a migration you have to keep true.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis, pg_trgm, citext, uuidOssp(map: "uuid-ossp")]
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access (§29)
+// ---------------------------------------------------------------------------
+
+enum UserType {
+  CUSTOMER
+  BUSINESS_USER
+  PLATFORM_USER
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  PENDING
+  DELETED
+}
+
+model User {
+  id              String     @id @default(uuid()) @db.Uuid
+  userType        UserType   @map("user_type")
+  fullName        String?    @map("full_name")
+  phoneE164       String?    @unique @map("phone_e164")
+  phoneVerifiedAt DateTime?  @map("phone_verified_at") @db.Timestamptz(6)
+  email           String?    @unique @map("email") @db.Citext
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(6)
+  avatarMediaId   String?    @map("avatar_media_id") @db.Uuid
+  status          UserStatus @default(ACTIVE)
+  locale          String     @default("en")
+  timezone        String     @default("Asia/Kolkata")
+  lastLoginAt     DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt       DateTime?  @map("deleted_at") @db.Timestamptz(6)
+
+  credentials   UserCredential[]
+  sessions      Session[]
+  devices       Device[]
+  roles         UserRole[]
+  addresses     Address[]
+  ownedBusiness Business[]
+  carts         Cart[]
+  orders        Order[]
+  otpChallenges OtpChallenge[]
+  avatar        MediaObject?         @relation("UserAvatar", fields: [avatarMediaId], references: [id], onDelete: SetNull)
+  media         MediaObject[]        @relation("MediaOwner")
+  staffOf       BranchStaff[]
+  notifications Notification[]
+  messages      Message[]
+  memberships   ConversationMember[]
+  customerChats Conversation[]
+
+  @@index([userType, status])
+  @@index([createdAt])
+  @@map("user")
+}
+
+enum CredentialType {
+  PASSWORD
+  OTP_PHONE
+  OTP_EMAIL
+  OAUTH
+}
+
+/// Credentials live outside `user` so adding OAuth or MFA is a new row, not a
+/// migration of the identity table (§29).
+model UserCredential {
+  id                String         @id @default(uuid()) @db.Uuid
+  userId            String         @map("user_id") @db.Uuid
+  type              CredentialType
+  provider          String?
+  providerSubject   String?        @map("provider_subject")
+  secretHash        String?        @map("secret_hash")
+  passwordChangedAt DateTime?      @map("password_changed_at") @db.Timestamptz(6)
+  failedAttempts    Int            @default(0) @map("failed_attempts")
+  lockedUntil       DateTime?      @map("locked_until") @db.Timestamptz(6)
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, provider])
+  @@unique([provider, providerSubject])
+  @@map("user_credential")
+}
+
+enum OtpChannel {
+  SMS
+  EMAIL
+}
+
+enum OtpPurpose {
+  LOGIN
+  REGISTER
+  RESET
+  VERIFY_PHONE
+}
+
+model OtpChallenge {
+  id          String     @id @default(uuid()) @db.Uuid
+  userId      String?    @map("user_id") @db.Uuid
+  destination String
+  channel     OtpChannel
+  purpose     OtpPurpose
+  codeHash    String     @map("code_hash")
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5) @map("max_attempts")
+  expiresAt   DateTime   @map("expires_at") @db.Timestamptz(6)
+  consumedAt  DateTime?  @map("consumed_at") @db.Timestamptz(6)
+  ip          String?    @db.Inet
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([destination, purpose, createdAt(sort: Desc)])
+  @@index([expiresAt])
+  @@map("otp_challenge")
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+model Device {
+  id                 String         @id @default(uuid()) @db.Uuid
+  userId             String         @map("user_id") @db.Uuid
+  platform           DevicePlatform
+  pushToken          String?        @map("push_token")
+  pushTokenInvalidAt DateTime?      @map("push_token_invalid_at") @db.Timestamptz(6)
+  appVersion         String?        @map("app_version")
+  osVersion          String?        @map("os_version")
+  lastSeenAt         DateTime?      @map("last_seen_at") @db.Timestamptz(6)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@unique([userId, platform, pushToken])
+  @@index([pushToken])
+  @@map("device")
+}
+
+/// One row per refresh-token generation. Rotation links generations through
+/// `parentSessionId`; presenting an already-rotated token revokes the family
+/// (§29, reuse detection).
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  deviceId         String?   @map("device_id") @db.Uuid
+  refreshTokenHash String    @unique @map("refresh_token_hash")
+  parentSessionId  String?   @map("parent_session_id") @db.Uuid
+  familyId         String    @map("family_id") @db.Uuid
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedReason    String?   @map("revoked_reason")
+  ip               String?   @db.Inet
+  userAgent        String?   @map("user_agent")
+  lastUsedAt       DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@map("session")
+}
+
+enum RoleScope {
+  PLATFORM
+  BUSINESS
+  BRANCH
+}
+
+model Role {
+  id          String    @id @default(uuid()) @db.Uuid
+  code        String    @unique
+  name        String
+  scopeType   RoleScope @map("scope_type")
+  isSystem    Boolean   @default(true) @map("is_system")
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  permissions RolePermission[]
+  assignments UserRole[]
+  staff       BranchStaff[]
+
+  @@map("role")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  roles RolePermission[]
+
+  @@map("permission")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permission")
+}
+
+/// A grant of a role, optionally narrowed to one business or one branch. Every
+/// authorisation check resolves through these rows, so a new role or plan never
+/// touches a request handler (§29).
+model UserRole {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  roleId     String    @map("role_id") @db.Uuid
+  businessId String?   @map("business_id") @db.Uuid
+  branchId   String?   @map("branch_id") @db.Uuid
+  grantedBy  String?   @map("granted_by") @db.Uuid
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  business Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  branch   Branch?   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId, businessId, branchId])
+  @@index([userId])
+  @@index([businessId])
+  @@index([branchId])
+  @@map("user_role")
+}
+
+// ---------------------------------------------------------------------------
+// Business & branch (§30)
+// ---------------------------------------------------------------------------
+
+model BusinessCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique
+  name        String
+  iconMediaId String?  @map("icon_media_id") @db.Uuid
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  businesses Business[]
+
+  @@map("business_category")
+}
+
+enum BusinessStatus {
+  DRAFT
+  PENDING_VERIFICATION
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model Business {
+  id                 String         @id @default(uuid()) @db.Uuid
+  ownerUserId        String         @map("owner_user_id") @db.Uuid
+  businessCategoryId String?        @map("business_category_id") @db.Uuid
+  name               String
+  slug               String         @unique
+  legalName          String?        @map("legal_name")
+  description        String?
+  logoMediaId        String?        @map("logo_media_id") @db.Uuid
+  coverMediaId       String?        @map("cover_media_id") @db.Uuid
+  status             BusinessStatus @default(DRAFT)
+  statusReason       String?        @map("status_reason")
+  approvedAt         DateTime?      @map("approved_at") @db.Timestamptz(6)
+  approvedBy         String?        @map("approved_by") @db.Uuid
+  planCode           String         @default("FREE") @map("plan_code")
+  ratingAvg          Decimal?       @map("rating_avg") @db.Decimal(3, 2)
+  ratingCount        Int            @default(0) @map("rating_count")
+  reliabilityScore   Decimal?       @map("reliability_score") @db.Decimal(5, 2)
+  settings           Json           @default("{}")
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt          DateTime?      @map("deleted_at") @db.Timestamptz(6)
+
+  owner            User                     @relation(fields: [ownerUserId], references: [id])
+  category         BusinessCategory?        @relation(fields: [businessCategoryId], references: [id], onDelete: SetNull)
+  branches         Branch[]
+  products         Product[]
+  customCategories BusinessCategoryCustom[]
+  documents        BusinessDocument[]
+  orders           Order[]
+  roleGrants       UserRole[]
+  conversations    Conversation[]
+
+  @@index([status])
+  @@index([businessCategoryId, status])
+  @@index([ownerUserId])
+  @@map("business")
+}
+
+enum BusinessDocumentType {
+  GST
+  LICENSE
+  ID_PROOF
+  ADDRESS_PROOF
+  OTHER
+}
+
+enum DocumentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model BusinessDocument {
+  id              String               @id @default(uuid()) @db.Uuid
+  businessId      String               @map("business_id") @db.Uuid
+  docType         BusinessDocumentType @map("doc_type")
+  mediaId         String?              @map("media_id") @db.Uuid
+  numberEncrypted Bytes?               @map("number_encrypted")
+  status          DocumentStatus       @default(PENDING)
+  reviewedBy      String?              @map("reviewed_by") @db.Uuid
+  reviewedAt      DateTime?            @map("reviewed_at") @db.Timestamptz(6)
+  notes           String?
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  business Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  media    MediaObject? @relation(fields: [mediaId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, status])
+  @@map("business_document")
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+  TEMP_CLOSED
+}
+
+enum InventoryMode {
+  AVAILABILITY_ONLY
+  LOW_STOCK_THRESHOLD
+  TRACKED_QUANTITY
+}
+
+model Branch {
+  id                    String                                @id @default(uuid()) @db.Uuid
+  businessId            String                                @map("business_id") @db.Uuid
+  name                  String
+  code                  String
+  phoneE164             String?                               @map("phone_e164")
+  addressLine1          String                                @map("address_line1")
+  addressLine2          String?                               @map("address_line2")
+  city                  String
+  state                 String?
+  postalCode            String?                               @map("postal_code")
+  country               String                                @default("IN")
+  /// PostGIS point; GIST-indexed in the migration for `branches/nearby`.
+  location              Unsupported("geography(Point, 4326)")
+  pickupInstructions    String?                               @map("pickup_instructions")
+  status                BranchStatus                          @default(ACTIVE)
+  acceptingOrders       Boolean                               @default(true) @map("accepting_orders")
+  avgPrepMinutes        Int?                                  @map("avg_prep_minutes")
+  inventoryMode         InventoryMode                         @default(AVAILABILITY_ONLY) @map("inventory_mode")
+  orderAcceptTimeoutMin Int?                                  @map("order_accept_timeout_min")
+  pickupExpiryHours     Int?                                  @map("pickup_expiry_hours")
+  timezone              String                                @default("Asia/Kolkata")
+  createdAt             DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt             DateTime?                             @map("deleted_at") @db.Timestamptz(6)
+
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  hours          BranchHour[]
+  holidays       BranchHoliday[]
+  staff          BranchStaff[]
+  branchProducts BranchProduct[]
+  carts          Cart[]
+  orders         Order[]
+  roleGrants     UserRole[]
+  conversations  Conversation[]
+
+  @@unique([businessId, code])
+  @@index([businessId, status])
+  @@index([city, status])
+  @@index([location(ops: raw("gist_geography_ops"))], map: "branch_location_gist", type: Gist)
+  @@map("branch")
+}
+
+/// Several rows per weekday support split shifts (the lunch closure that broke
+/// every "one open/close per day" schema).
+model BranchHour {
+  id        String   @id @default(uuid()) @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  dayOfWeek Int      @map("day_of_week") @db.SmallInt
+  opensAt   DateTime @map("opens_at") @db.Time(6)
+  closesAt  DateTime @map("closes_at") @db.Time(6)
+  isClosed  Boolean  @default(false) @map("is_closed")
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, dayOfWeek, opensAt])
+  @@map("branch_hour")
+}
+
+model BranchHoliday {
+  id       String    @id @default(uuid()) @db.Uuid
+  branchId String    @map("branch_id") @db.Uuid
+  date     DateTime  @db.Date
+  reason   String?
+  isClosed Boolean   @default(true) @map("is_closed")
+  opensAt  DateTime? @map("opens_at") @db.Time(6)
+  closesAt DateTime? @map("closes_at") @db.Time(6)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, date])
+  @@map("branch_holiday")
+}
+
+enum BranchStaffStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+model BranchStaff {
+  id        String            @id @default(uuid()) @db.Uuid
+  branchId  String            @map("branch_id") @db.Uuid
+  userId    String            @map("user_id") @db.Uuid
+  roleId    String            @map("role_id") @db.Uuid
+  status    BranchStaffStatus @default(INVITED)
+  invitedBy String?           @map("invited_by") @db.Uuid
+  joinedAt  DateTime?         @map("joined_at") @db.Timestamptz(6)
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id])
+
+  @@unique([branchId, userId])
+  @@index([userId])
+  @@map("branch_staff")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog (§31)
+// ---------------------------------------------------------------------------
+
+model ProductCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  parentId    String?  @map("parent_id") @db.Uuid
+  name        String
+  slug        String   @unique
+  /// Materialised path so subtree queries are not recursive CTEs per listing.
+  path        String
+  level       Int      @default(0)
+  iconMediaId String?  @map("icon_media_id") @db.Uuid
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  parent         ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children       ProductCategory[] @relation("CategoryTree")
+  products       Product[]
+  masterProducts MasterProduct[]
+
+  @@index([parentId])
+  @@index([path])
+  @@map("product_category")
+}
+
+/// The shop's own aisle grouping — shops think in aisles, the platform thinks
+/// in taxonomy, and forcing one onto the other loses both.
+model BusinessCategoryCustom {
+  id         String   @id @default(uuid()) @db.Uuid
+  businessId String   @map("business_id") @db.Uuid
+  name       String
+  sortOrder  Int      @default(0) @map("sort_order")
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  business Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([businessId, name])
+  @@map("business_category_custom")
+}
+
+enum ProductUnit {
+  KG
+  G
+  L
+  ML
+  PIECE
+  PACK
+  PAGE
+  SERVICE
+}
+
+enum DiscountType {
+  NONE
+  PERCENT
+  FLAT
+}
+
+model MasterProduct {
+  id                String      @id @default(uuid()) @db.Uuid
+  name              String
+  brand             String?
+  barcode           String?     @unique
+  productCategoryId String?     @map("product_category_id") @db.Uuid
+  unit              ProductUnit
+  unitValue         Decimal     @map("unit_value") @db.Decimal(12, 3)
+  defaultMrp        Decimal?    @map("default_mrp") @db.Decimal(12, 2)
+  imageMediaId      String?     @map("image_media_id") @db.Uuid
+  isActive          Boolean     @default(true) @map("is_active")
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  category ProductCategory? @relation(fields: [productCategoryId], references: [id], onDelete: SetNull)
+  products Product[]
+
+  @@index([productCategoryId, isActive])
+  @@map("master_product")
+}
+
+model Product {
+  id                       String                   @id @default(uuid()) @db.Uuid
+  businessId               String                   @map("business_id") @db.Uuid
+  productCategoryId        String?                  @map("product_category_id") @db.Uuid
+  businessCategoryCustomId String?                  @map("business_category_custom_id") @db.Uuid
+  masterProductId          String?                  @map("master_product_id") @db.Uuid
+  name                     String
+  description              String?
+  brand                    String?
+  sku                      String?
+  unit                     ProductUnit
+  unitValue                Decimal                  @map("unit_value") @db.Decimal(12, 3)
+  mrp                      Decimal?                 @db.Decimal(12, 2)
+  basePrice                Decimal                  @map("base_price") @db.Decimal(12, 2)
+  taxRate                  Decimal                  @default(0) @map("tax_rate") @db.Decimal(5, 2)
+  discountType             DiscountType             @default(NONE) @map("discount_type")
+  discountValue            Decimal?                 @map("discount_value") @db.Decimal(12, 2)
+  isActive                 Boolean                  @default(true) @map("is_active")
+  isCustom                 Boolean                  @default(false) @map("is_custom")
+  /// Generated column (see migration): full-text search without a trigger.
+  searchVector             Unsupported("tsvector")? @map("search_vector")
+  createdAt                DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt                DateTime?                @map("deleted_at") @db.Timestamptz(6)
+
+  business       Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  category       ProductCategory?        @relation(fields: [productCategoryId], references: [id], onDelete: SetNull)
+  customCategory BusinessCategoryCustom? @relation(fields: [businessCategoryCustomId], references: [id], onDelete: SetNull)
+  masterProduct  MasterProduct?          @relation(fields: [masterProductId], references: [id], onDelete: SetNull)
+  media          ProductMedia[]
+  branchProducts BranchProduct[]
+  cartItems      CartItem[]
+  orderItems     OrderItem[]
+
+  @@unique([businessId, sku])
+  @@index([businessId, isActive])
+  @@index([productCategoryId])
+  @@index([searchVector], map: "product_search_vector_gin", type: Gin)
+  @@index([name(ops: raw("gin_trgm_ops"))], map: "product_name_trgm", type: Gin)
+  @@map("product")
+}
+
+model ProductMedia {
+  id        String  @id @default(uuid()) @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  mediaId   String  @map("media_id") @db.Uuid
+  sortOrder Int     @default(0) @map("sort_order")
+  isPrimary Boolean @default(false) @map("is_primary")
+
+  product Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  media   MediaObject @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, mediaId])
+  @@map("product_media")
+}
+
+enum ProductAvailability {
+  AVAILABLE
+  OUT_OF_STOCK
+  HIDDEN
+}
+
+/// ADR-05: products belong to the business, availability and price belong to
+/// the branch. `quantityReserved` is what accepted-but-not-handed-over orders
+/// hold, so overselling is a subtraction rather than a race.
+model BranchProduct {
+  id                String              @id @default(uuid()) @db.Uuid
+  branchId          String              @map("branch_id") @db.Uuid
+  productId         String              @map("product_id") @db.Uuid
+  priceOverride     Decimal?            @map("price_override") @db.Decimal(12, 2)
+  availability      ProductAvailability @default(AVAILABLE)
+  quantityOnHand    Decimal?            @map("quantity_on_hand") @db.Decimal(12, 3)
+  quantityReserved  Decimal             @default(0) @map("quantity_reserved") @db.Decimal(12, 3)
+  lowStockThreshold Decimal?            @map("low_stock_threshold") @db.Decimal(12, 3)
+  version           Int                 @default(0)
+  updatedBy         String?             @map("updated_by") @db.Uuid
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch       Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product      Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems    CartItem[]
+  orderItems   OrderItem[]
+  transactions InventoryTransaction[]
+
+  @@unique([branchId, productId])
+  @@index([branchId, availability])
+  @@index([productId])
+  @@map("branch_product")
+}
+
+enum InventoryTransactionType {
+  MANUAL_ADJUST
+  RESERVE
+  RELEASE
+  CONSUME
+  IMPORT
+  CORRECTION
+}
+
+/// Append-only: never updated, never deleted. It is both the audit trail and
+/// the dataset future demand forecasting will need.
+model InventoryTransaction {
+  id              String                   @id @default(uuid()) @db.Uuid
+  branchProductId String                   @map("branch_product_id") @db.Uuid
+  orderId         String?                  @map("order_id") @db.Uuid
+  type            InventoryTransactionType
+  quantityDelta   Decimal                  @map("quantity_delta") @db.Decimal(12, 3)
+  quantityAfter   Decimal?                 @map("quantity_after") @db.Decimal(12, 3)
+  reason          String?
+  actorUserId     String?                  @map("actor_user_id") @db.Uuid
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  branchProduct BranchProduct @relation(fields: [branchProductId], references: [id], onDelete: Cascade)
+  order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([branchProductId, createdAt(sort: Desc)])
+  @@index([orderId])
+  @@map("inventory_transaction")
+}
+
+// ---------------------------------------------------------------------------
+// Customer, cart (§32)
+// ---------------------------------------------------------------------------
+
+model Address {
+  id           String                                 @id @default(uuid()) @db.Uuid
+  userId       String                                 @map("user_id") @db.Uuid
+  label        String?
+  addressLine1 String                                 @map("address_line1")
+  addressLine2 String?                                @map("address_line2")
+  landmark     String?
+  city         String
+  state        String?
+  postalCode   String?                                @map("postal_code")
+  country      String                                 @default("IN")
+  location     Unsupported("geography(Point, 4326)")?
+  isDefault    Boolean                                @default(false) @map("is_default")
+  createdAt    DateTime                               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime                               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime?                              @map("deleted_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isDefault])
+  @@index([location(ops: raw("gist_geography_ops"))], map: "address_location_gist", type: Gist)
+  @@map("address")
+}
+
+enum CartStatus {
+  ACTIVE
+  CONVERTED
+  ABANDONED
+  EXPIRED
+}
+
+/// One active cart per (customer, branch) — enforced by a partial unique index
+/// created in the migration, not by application code (FR-G1).
+model Cart {
+  id               String     @id @default(uuid()) @db.Uuid
+  customerUserId   String     @map("customer_user_id") @db.Uuid
+  branchId         String     @map("branch_id") @db.Uuid
+  status           CartStatus @default(ACTIVE)
+  expiresAt        DateTime?  @map("expires_at") @db.Timestamptz(6)
+  convertedOrderId String?    @unique @map("converted_order_id") @db.Uuid
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer User       @relation(fields: [customerUserId], references: [id], onDelete: Cascade)
+  branch   Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  items    CartItem[]
+  order    Order?     @relation("CartOrder")
+
+  @@index([customerUserId, status])
+  @@index([branchId, status])
+  @@map("cart")
+}
+
+model CartItem {
+  id                String   @id @default(uuid()) @db.Uuid
+  cartId            String   @map("cart_id") @db.Uuid
+  branchProductId   String   @map("branch_product_id") @db.Uuid
+  productId         String   @map("product_id") @db.Uuid
+  quantity          Decimal  @db.Decimal(12, 3)
+  unitPriceSnapshot Decimal  @map("unit_price_snapshot") @db.Decimal(12, 2)
+  taxRateSnapshot   Decimal  @default(0) @map("tax_rate_snapshot") @db.Decimal(5, 2)
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  cart          Cart          @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  branchProduct BranchProduct @relation(fields: [branchProductId], references: [id], onDelete: Restrict)
+  product       Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([cartId, branchProductId])
+  @@map("cart_item")
+}
+
+// ---------------------------------------------------------------------------
+// Ordering (§33)
+// ---------------------------------------------------------------------------
+
+enum OrderStatus {
+  CART
+  ORDER_PLACED
+  RECEIVED
+  ACCEPTED
+  PREPARING
+  PACKING
+  PACKED
+  READY_FOR_PICKUP
+  CUSTOMER_ARRIVED
+  HANDED_OVER
+  COMPLETED
+  REJECTED
+  CANCELLED
+  EXPIRED
+  PAYMENT_FAILED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum FulfilmentType {
+  PICKUP
+  DELIVERY
+}
+
+enum PaymentMode {
+  PAY_AT_STORE
+  ONLINE
+}
+
+enum PaymentStatus {
+  NOT_APPLICABLE
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum ActorType {
+  CUSTOMER
+  BUSINESS
+  ADMIN
+  SYSTEM
+}
+
+/// One timestamp column per milestone (`acceptedAt`, `readyAt`, …) so the
+/// operational analytics in §39 never have to parse status history.
+model Order {
+  id                 String         @id @default(uuid()) @db.Uuid
+  orderNumber        String         @unique @map("order_number")
+  customerUserId     String         @map("customer_user_id") @db.Uuid
+  businessId         String         @map("business_id") @db.Uuid
+  branchId           String         @map("branch_id") @db.Uuid
+  cartId             String?        @unique @map("cart_id") @db.Uuid
+  status             OrderStatus    @default(ORDER_PLACED)
+  fulfilmentType     FulfilmentType @default(PICKUP) @map("fulfilment_type")
+  itemCount          Int            @default(0) @map("item_count")
+  subtotal           Decimal        @default(0) @db.Decimal(12, 2)
+  taxTotal           Decimal        @default(0) @map("tax_total") @db.Decimal(12, 2)
+  discountTotal      Decimal        @default(0) @map("discount_total") @db.Decimal(12, 2)
+  grandTotal         Decimal        @default(0) @map("grand_total") @db.Decimal(12, 2)
+  currency           String         @default("INR") @db.Char(3)
+  paymentMode        PaymentMode    @default(PAY_AT_STORE) @map("payment_mode")
+  paymentStatus      PaymentStatus  @default(NOT_APPLICABLE) @map("payment_status")
+  prepMinutesInitial Int?           @map("prep_minutes_initial")
+  prepMinutesCurrent Int?           @map("prep_minutes_current")
+  placedAt           DateTime?      @map("placed_at") @db.Timestamptz(6)
+  receivedAt         DateTime?      @map("received_at") @db.Timestamptz(6)
+  acceptedAt         DateTime?      @map("accepted_at") @db.Timestamptz(6)
+  promisedReadyAt    DateTime?      @map("promised_ready_at") @db.Timestamptz(6)
+  readyAt            DateTime?      @map("ready_at") @db.Timestamptz(6)
+  arrivedAt          DateTime?      @map("arrived_at") @db.Timestamptz(6)
+  handedOverAt       DateTime?      @map("handed_over_at") @db.Timestamptz(6)
+  completedAt        DateTime?      @map("completed_at") @db.Timestamptz(6)
+  cancelledAt        DateTime?      @map("cancelled_at") @db.Timestamptz(6)
+  cancelledByUserId  String?        @map("cancelled_by_user_id") @db.Uuid
+  cancelReason       String?        @map("cancel_reason")
+  pickupCode         String?        @map("pickup_code") @db.Char(6)
+  customerNote       String?        @map("customer_note")
+  idempotencyKey     String?        @map("idempotency_key")
+  version            Int            @default(0)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer      User                   @relation(fields: [customerUserId], references: [id])
+  business      Business               @relation(fields: [businessId], references: [id])
+  branch        Branch                 @relation(fields: [branchId], references: [id])
+  cart          Cart?                  @relation("CartOrder", fields: [cartId], references: [id])
+  items         OrderItem[]
+  history       OrderStatusHistory[]
+  prepChanges   OrderPrepAdjustment[]
+  pickup        Pickup?
+  inventoryTxns InventoryTransaction[]
+  conversation  Conversation?
+
+  @@unique([customerUserId, idempotencyKey])
+  @@index([branchId, status, placedAt(sort: Desc)])
+  @@index([customerUserId, placedAt(sort: Desc)])
+  @@index([status, placedAt])
+  @@index([businessId, completedAt])
+  @@map("order")
+}
+
+enum PackingStatus {
+  PENDING
+  PACKED
+  SUBSTITUTED
+  UNAVAILABLE
+}
+
+/// Every product attribute is snapshotted: a later rename or repricing must not
+/// rewrite what the customer actually ordered.
+model OrderItem {
+  id                     String        @id @default(uuid()) @db.Uuid
+  orderId                String        @map("order_id") @db.Uuid
+  productId              String?       @map("product_id") @db.Uuid
+  branchProductId        String?       @map("branch_product_id") @db.Uuid
+  nameSnapshot           String        @map("name_snapshot")
+  unitSnapshot           ProductUnit   @map("unit_snapshot")
+  unitValueSnapshot      Decimal       @map("unit_value_snapshot") @db.Decimal(12, 3)
+  quantityOrdered        Decimal       @map("quantity_ordered") @db.Decimal(12, 3)
+  quantityFulfilled      Decimal?      @map("quantity_fulfilled") @db.Decimal(12, 3)
+  unitPrice              Decimal       @map("unit_price") @db.Decimal(12, 2)
+  taxRate                Decimal       @default(0) @map("tax_rate") @db.Decimal(5, 2)
+  lineTotal              Decimal       @map("line_total") @db.Decimal(12, 2)
+  packingStatus          PackingStatus @default(PENDING) @map("packing_status")
+  substituteProductId    String?       @map("substitute_product_id") @db.Uuid
+  substitutionApprovedAt DateTime?     @map("substitution_approved_at") @db.Timestamptz(6)
+  isCustomItem           Boolean       @default(false) @map("is_custom_item")
+  customSpec             Json?         @map("custom_spec")
+  mediaId                String?       @map("media_id") @db.Uuid
+  createdAt              DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order         Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product       Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
+  branchProduct BranchProduct? @relation(fields: [branchProductId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@map("order_item")
+}
+
+model OrderStatusHistory {
+  id          String       @id @default(uuid()) @db.Uuid
+  orderId     String       @map("order_id") @db.Uuid
+  fromStatus  OrderStatus? @map("from_status")
+  toStatus    OrderStatus  @map("to_status")
+  actorUserId String?      @map("actor_user_id") @db.Uuid
+  actorRole   String?      @map("actor_role")
+  actorType   ActorType    @map("actor_type")
+  reason      String?
+  metadata    Json?
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+model OrderPrepAdjustment {
+  id                    String    @id @default(uuid()) @db.Uuid
+  orderId               String    @map("order_id") @db.Uuid
+  deltaMinutes          Int       @map("delta_minutes")
+  reason                String?
+  actorUserId           String?   @map("actor_user_id") @db.Uuid
+  promisedReadyAtBefore DateTime? @map("promised_ready_at_before") @db.Timestamptz(6)
+  promisedReadyAtAfter  DateTime? @map("promised_ready_at_after") @db.Timestamptz(6)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_prep_adjustment")
+}
+
+enum PickupMethod {
+  CODE
+  QR
+  OTP
+  MANUAL_OVERRIDE
+}
+
+model Pickup {
+  id               String       @id @default(uuid()) @db.Uuid
+  orderId          String       @unique @map("order_id") @db.Uuid
+  method           PickupMethod @default(CODE)
+  verifiedAt       DateTime?    @map("verified_at") @db.Timestamptz(6)
+  verifiedByUserId String?      @map("verified_by_user_id") @db.Uuid
+  overrideReason   String?      @map("override_reason")
+  attempts         Int          @default(0)
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("pickup")
+}
+
+// ---------------------------------------------------------------------------
+// Conversations (§34)
+// ---------------------------------------------------------------------------
+
+enum ConversationType {
+  ORDER
+  BRANCH
+  SUPPORT
+}
+
+enum ConversationStatus {
+  OPEN
+  SYSTEM_ONLY
+  CLOSED
+}
+
+model Conversation {
+  id             String             @id @default(uuid()) @db.Uuid
+  type           ConversationType
+  orderId        String?            @unique @map("order_id") @db.Uuid
+  businessId     String             @map("business_id") @db.Uuid
+  branchId       String             @map("branch_id") @db.Uuid
+  customerUserId String             @map("customer_user_id") @db.Uuid
+  status         ConversationStatus @default(OPEN)
+  lastMessageId  String?            @map("last_message_id") @db.Uuid
+  lastMessageAt  DateTime?          @map("last_message_at") @db.Timestamptz(6)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order    Order?               @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  business Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  branch   Branch               @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  customer User                 @relation(fields: [customerUserId], references: [id], onDelete: Cascade)
+  members  ConversationMember[]
+  messages Message[]
+
+  @@index([branchId, lastMessageAt(sort: Desc)])
+  @@index([customerUserId, lastMessageAt(sort: Desc)])
+  @@map("conversation")
+}
+
+model ConversationMember {
+  id                String    @id @default(uuid()) @db.Uuid
+  conversationId    String    @map("conversation_id") @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  memberRole        ActorType @map("member_role")
+  lastReadMessageId String?   @map("last_read_message_id") @db.Uuid
+  lastReadAt        DateTime? @map("last_read_at") @db.Timestamptz(6)
+  unreadCount       Int       @default(0) @map("unread_count")
+  mutedUntil        DateTime? @map("muted_until") @db.Timestamptz(6)
+  joinedAt          DateTime  @default(now()) @map("joined_at") @db.Timestamptz(6)
+  leftAt            DateTime? @map("left_at") @db.Timestamptz(6)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_member")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  SYSTEM
+  PRODUCT_REF
+  ORDER_REF
+  QUOTE
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+/// `(conversationId, clientMessageId)` unique makes send idempotent on flaky
+/// mobile networks. System messages store an event code in `payload`, never a
+/// rendered sentence, so localisation and copy changes work retroactively.
+model Message {
+  id               String        @id @default(uuid()) @db.Uuid
+  conversationId   String        @map("conversation_id") @db.Uuid
+  senderUserId     String?       @map("sender_user_id") @db.Uuid
+  clientMessageId  String?       @map("client_message_id")
+  type             MessageType   @default(TEXT)
+  body             String?
+  payload          Json?
+  replyToMessageId String?       @map("reply_to_message_id") @db.Uuid
+  status           MessageStatus @default(SENT)
+  editedAt         DateTime?     @map("edited_at") @db.Timestamptz(6)
+  deletedAt        DateTime?     @map("deleted_at") @db.Timestamptz(6)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?               @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
+  replyTo      Message?            @relation("MessageReply", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  replies      Message[]           @relation("MessageReply")
+  attachments  MessageAttachment[]
+
+  @@unique([conversationId, clientMessageId])
+  @@index([conversationId, createdAt(sort: Desc)])
+  @@index([senderUserId])
+  @@map("message")
+}
+
+model MessageAttachment {
+  id        String @id @default(uuid()) @db.Uuid
+  messageId String @map("message_id") @db.Uuid
+  mediaId   String @map("media_id") @db.Uuid
+  sortOrder Int    @default(0) @map("sort_order")
+
+  message Message     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  media   MediaObject @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, mediaId])
+  @@map("message_attachment")
+}
+
+// ---------------------------------------------------------------------------
+// Media (§35)
+// ---------------------------------------------------------------------------
+
+enum MediaPurpose {
+  CHAT_IMAGE
+  CHAT_DOCUMENT
+  PRODUCT_IMAGE
+  BUSINESS_DOCUMENT
+  BUSINESS_MEDIA
+  AVATAR
+  REVIEW_PHOTO
+}
+
+enum MediaStatus {
+  PENDING
+  UPLOADED
+  SCANNING
+  SCAN_CLEAN
+  INFECTED
+  FAILED
+  DELETED
+}
+
+model MediaObject {
+  id               String       @id @default(uuid()) @db.Uuid
+  ownerUserId      String?      @map("owner_user_id") @db.Uuid
+  purpose          MediaPurpose
+  storageKey       String       @unique @map("storage_key")
+  bucket           String
+  mimeType         String       @map("mime_type")
+  sizeBytes        BigInt?      @map("size_bytes")
+  checksumSha256   String?      @map("checksum_sha256")
+  originalFilename String?      @map("original_filename")
+  status           MediaStatus  @default(PENDING)
+  scanResult       Json?        @map("scan_result")
+  width            Int?
+  height           Int?
+  pageCount        Int?         @map("page_count")
+  thumbnailKey     String?      @map("thumbnail_key")
+  expiresAt        DateTime?    @map("expires_at") @db.Timestamptz(6)
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt        DateTime?    @map("deleted_at") @db.Timestamptz(6)
+
+  owner       User?               @relation("MediaOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  avatarOf    User[]              @relation("UserAvatar")
+  productUses ProductMedia[]
+  attachments MessageAttachment[]
+  documents   BusinessDocument[]
+
+  @@index([ownerUserId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("media_object")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (§36)
+// ---------------------------------------------------------------------------
+
+enum NotificationCategory {
+  ORDER
+  CHAT
+  ACCOUNT
+  PAYMENT
+  MARKETING
+  SYSTEM
+}
+
+enum NotificationPriority {
+  CRITICAL
+  NORMAL
+  LOW
+}
+
+model Notification {
+  id        String               @id @default(uuid()) @db.Uuid
+  userId    String               @map("user_id") @db.Uuid
+  category  NotificationCategory
+  eventCode String               @map("event_code")
+  title     String
+  body      String?
+  payload   Json?
+  priority  NotificationPriority @default(NORMAL)
+  readAt    DateTime?            @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDelivery[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("notification")
+}
+
+enum NotificationChannel {
+  IN_APP
+  PUSH
+  SMS
+  EMAIL
+}
+
+enum DeliveryStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  SUPPRESSED
+}
+
+/// `dedupeKey = hash(eventId, userId, channel)` is what makes outbox retries
+/// safe: a redelivered event cannot send a second push.
+model NotificationDelivery {
+  id                String              @id @default(uuid()) @db.Uuid
+  notificationId    String              @map("notification_id") @db.Uuid
+  channel           NotificationChannel
+  status            DeliveryStatus      @default(QUEUED)
+  provider          String?
+  providerMessageId String?             @map("provider_message_id")
+  attempts          Int                 @default(0)
+  lastError         String?             @map("last_error")
+  dedupeKey         String              @unique @map("dedupe_key")
+  sentAt            DateTime?           @map("sent_at") @db.Timestamptz(6)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@map("notification_delivery")
+}
+
+model NotificationPreference {
+  userId          String               @map("user_id") @db.Uuid
+  category        NotificationCategory
+  channel         NotificationChannel
+  enabled         Boolean              @default(true)
+  quietHoursStart DateTime?            @map("quiet_hours_start") @db.Time(6)
+  quietHoursEnd   DateTime?            @map("quiet_hours_end") @db.Time(6)
+
+  @@id([userId, category, channel])
+  @@map("notification_preference")
+}
+
+// ---------------------------------------------------------------------------
+// Platform / operations (§38)
+// ---------------------------------------------------------------------------
+
+/// Written in the same transaction as the domain change; a pump publishes rows
+/// where `publishedAt IS NULL` (ADR-3).
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id") @db.Uuid
+  eventType     String    @map("event_type")
+  payload       Json
+  occurredAt    DateTime  @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts      Int       @default(0)
+  lastError     String?   @map("last_error")
+
+  @@index([publishedAt, occurredAt])
+  @@index([aggregateType, aggregateId])
+  @@map("outbox_event")
+}
+
+/// Consumer-side dedupe: effectively-once handling of an at-least-once stream.
+model ProcessedEvent {
+  handler     String
+  eventId     String   @map("event_id") @db.Uuid
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@id([handler, eventId])
+  @@map("processed_event")
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  key            String
+  userId         String?  @map("user_id") @db.Uuid
+  endpoint       String
+  requestHash    String   @map("request_hash")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([userId, endpoint, key])
+  @@index([expiresAt])
+  @@map("idempotency_record")
+}
+
+/// Append-only; the application role has no UPDATE/DELETE grant in deployed
+/// environments.
+model AuditLog {
+  id          String    @id @default(uuid()) @db.Uuid
+  actorUserId String?   @map("actor_user_id") @db.Uuid
+  actorType   ActorType @map("actor_type")
+  action      String
+  entityType  String    @map("entity_type")
+  entityId    String?   @map("entity_id") @db.Uuid
+  before      Json?
+  after       Json?
+  ip          String?   @db.Inet
+  userAgent   String?   @map("user_agent")
+  requestId   String?   @map("request_id")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId, createdAt(sort: Desc)])
+  @@index([actorUserId, createdAt(sort: Desc)])
+  @@map("audit_log")
+}
+
+model PlatformConfig {
+  key         String   @id
+  value       Json
+  description String?
+  updatedBy   String?  @map("updated_by") @db.Uuid
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("platform_config")
+}
+
+model FeatureFlag {
+  key         String   @id
+  enabled     Boolean  @default(false)
+  targeting   Json     @default("{}")
+  description String?
+  updatedBy   String?  @map("updated_by") @db.Uuid
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("feature_flag")
+}
+
+model City {
+  id         String    @id @default(uuid()) @db.Uuid
+  name       String
+  state      String?
+  country    String    @default("IN")
+  isLaunched Boolean   @default(false) @map("is_launched")
+  launchedAt DateTime? @map("launched_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([name, state, country])
+  @@map("city")
+}

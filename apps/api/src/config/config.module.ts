@@ -1,20 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
+import { AppConfig } from './app-config';
 import { validateEnv, type Env } from './env.schema';
-
-/** Typed accessor over Nest's ConfigService so call sites never stringly-type keys. */
-export class AppConfig {
-  constructor(private readonly config: ConfigService<Env, true>) {}
-
-  get<K extends keyof Env>(key: K): Env[K] {
-    return this.config.get(key, { infer: true });
-  }
-
-  get isProduction(): boolean {
-    return this.get('NODE_ENV') === 'production';
-  }
-}
 
 @Global()
 @Module({

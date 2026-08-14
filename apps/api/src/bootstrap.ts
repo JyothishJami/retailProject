@@ -6,7 +6,7 @@ import { Logger } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
-import { AppConfig } from './config/config.module';
+import { AppConfig } from './config/app-config';
 
 /**
  * Applies the HTTP contract (prefix, versioning, error envelope, CORS, headers).
